@@ -32,10 +32,12 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.util.Date;
 
 public final class MainActivity extends Activity {
     private static final String LOGTAG = MainActivity.class.getName();
     private static final String LEADERBOARD_URL = "https://location.services.mozilla.com/leaders";
+    private static long sLastUpdateCheck = new Date().getTime();
 
     private ScannerServiceInterface  mConnectionRemote;
     private ServiceConnection        mConnection;
@@ -91,12 +93,17 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        Log.d(LOGTAG, "onCreate");
+
         enableStrictMode();
         setContentView(R.layout.activity_main);
 
-        Updater.checkForUpdates(this);
-
-        Log.d(LOGTAG, "onCreate");
+        long now = new Date().getTime();
+        if (sLastUpdateCheck + 300000 /* 5m */ < now) {
+          Log.d(LOGTAG, "Checking for update...");
+          Updater.checkForUpdates(this);
+        }
     }
 
     private void checkGps() {
