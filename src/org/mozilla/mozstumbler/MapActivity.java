@@ -8,20 +8,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Color;
+import android.graphics.Paint.Style;
+import android.graphics.Point;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
+import android.widget.RelativeLayout;
 import android.widget.Toast;
-
-import com.google.android.gms.maps.CameraUpdateFactory;
-import com.google.android.gms.maps.GoogleMap;
-import com.google.android.gms.maps.SupportMapFragment;
-import com.google.android.gms.maps.model.CircleOptions;
-import com.google.android.gms.maps.model.LatLng;
-import com.google.android.gms.maps.model.Marker;
-import com.google.android.gms.maps.model.MarkerOptions;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -32,12 +27,29 @@ import java.io.OutputStream;
 import java.lang.Void;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-public final class MapActivity extends FragmentActivity {
+import org.osmdroid.ResourceProxy;
+import org.osmdroid.tileprovider.MapTileProviderBasic;
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
+import org.osmdroid.util.GeoPoint;
+import org.osmdroid.views.MapController;
+import org.osmdroid.views.MapView.Projection;
+import org.osmdroid.views.MapView;
+import org.osmdroid.views.overlay.SafeDrawOverlay;
+import org.osmdroid.views.overlay.TilesOverlay;
+import org.osmdroid.views.safecanvas.ISafeCanvas;
+import org.osmdroid.views.safecanvas.SafePaint;
+import org.osmdroid.views.safecanvas.SafeTranslatedCanvas;
+import org.osmdroid.views.util.constants.MapViewConstants;
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase;
+import org.osmdroid.tileprovider.tilesource.XYTileSource;
+
+public final class MapActivity extends Activity {
     private static final String LOGTAG = MapActivity.class.getName();
 
     // TODO factor this out into something that can be shared with Reporter.java
@@ -45,7 +57,10 @@ public final class MapActivity extends FragmentActivity {
     private static final String USER_AGENT_HEADER = "User-Agent";
     private static String MOZSTUMBLER_USER_AGENT_STRING;
 
-    private GoogleMap mMap;
+    private MapView mMap;
+    private TilesOverlay mTilesOverlay;
+    private MapTileProviderBasic mProvider;
+
     private ReporterBroadcastReceiver mReceiver;
 
     // TODO add cell data
@@ -71,7 +86,7 @@ public final class MapActivity extends FragmentActivity {
 
           if (subject.equals("WifiScanner")) {
             mWifiData = intent.getStringExtra("data");
-            zeroPositionAndMarker();
+
             new GetLocationAndMapItTask().execute("");
             mDone = true;
           }
@@ -90,10 +105,28 @@ public final class MapActivity extends FragmentActivity {
         mWifiData = "";
         MOZSTUMBLER_USER_AGENT_STRING = NetworkUtils.getUserAgentString(this);
 
-        mMap = ((SupportMapFragment) getSupportFragmentManager().findFragmentById(R.id.map)).getMap();
+        OnlineTileSourceBase MAPNIK = new XYTileSource("Mapnik",
+                                                       ResourceProxy.string.mapnik, 0, 18, 256, ".png", "http://tile.openstreetmap.org/");
+
+        mMap = (MapView) this.findViewById(R.id.map);
+        mMap.setTileSource(MAPNIK);
+        mMap.setBuiltInZoomControls(true);
+        mMap.setMultiTouchControls(true);
+
+        mProvider = new MapTileProviderBasic(getApplicationContext());
+        mProvider.setTileSource(TileSourceFactory.FIETS_OVERLAY_NL);
+        mTilesOverlay = new TilesOverlay(mProvider, this.getBaseContext());
+        mMap.getOverlays().add(this.mTilesOverlay);
+
         if (mMap != null) {
             mReceiver = new ReporterBroadcastReceiver();
             registerReceiver(mReceiver, new IntentFilter(ScannerService.MESSAGE_TOPIC));
+
+            // DEBUG DEBUG DEBUG
+            Log.d(LOGTAG, "Going to San Jose");
+            positionMapAt(37, -121, 1000);
+            // DEBUG DEBUG DEBUG
+
         } else {
             Log.e(LOGTAG, "", new IllegalStateException("mMap must be non-null"));
             finish();
@@ -102,34 +135,44 @@ public final class MapActivity extends FragmentActivity {
         Log.d(LOGTAG, "onCreate");
     }
 
-    private void moveToPositionAndMarker(float lat, float lon, float accuracy) {
-        LatLng poi = new LatLng(lat, lon);
-        mMap.addMarker(new MarkerOptions().position(poi));
+      class AccuracyCircleOverlay extends SafeDrawOverlay {
+        private GeoPoint mPoint;
+        private float mAccuracy;
 
-        float zoom = zoomFromAccuracy(accuracy);
-        mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(poi, zoom));
-
-        mMap.addCircle(new CircleOptions()
-                                     .center(poi)
-                                     .radius(accuracy)
-                                     .fillColor(Color.argb(50, 0, 153, 255))
-                                     .strokeWidth(0));
-    }
-
-    private void zeroPositionAndMarker() {
-        // A high altitude view of Google Maps' "North Atlantic Ocean" text is a pretty
-        // clear indication of "we don't know where you are".
-        LatLng northAtlanticOcean = new LatLng(35, -41);
-        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(northAtlanticOcean, 2));
-    }
-
-    private static float zoomFromAccuracy(float accuracy) {
-        if (accuracy <= 0) {
-            Log.w(LOGTAG, "", new IllegalArgumentException("accuracy=" + accuracy));
-            return 2;
+        public AccuracyCircleOverlay(GeoPoint point, float accuracy) {
+          super(getApplicationContext());
+          mPoint = point;
+          mAccuracy = accuracy;
         }
-        // Valid zoom range is [2.0f, 21.0f].
-        return 21f - (float) Math.log(accuracy);
+
+        protected void drawSafe(final ISafeCanvas c, final MapView osmv, final boolean shadow)
+        {
+          Projection pj = osmv.getProjection();
+          Point center = pj.toPixels(mPoint, null);
+          float radius = pj.metersToEquatorPixels(mAccuracy);
+
+          SafePaint circle = new SafePaint();
+          circle.setARGB(0, 100, 100, 255);
+
+          // Fill
+          circle.setAlpha(40);
+          circle.setStyle(Style.FILL);
+          c.drawCircle(center.x, center.y, radius, circle);
+
+          // Border
+          circle.setAlpha(165);
+          circle.setStyle(Style.STROKE);
+          c.drawCircle(center.x, center.y, radius, circle);
+        }
+      }
+
+    private void positionMapAt(float lat, float lon, float accuracy) {
+      GeoPoint point = new GeoPoint(lat, lon);
+      mMap.getController().setCenter(point);
+      mMap.getController().setZoom(10);
+      mMap.getController().animateTo(point);
+      mMap.getOverlays().add(new AccuracyCircleOverlay(point, accuracy));
+      mMap.invalidate();
     }
 
     @Override
@@ -161,7 +204,6 @@ public final class MapActivity extends FragmentActivity {
 
         @Override
         protected void onPreExecute() {
-            zeroPositionAndMarker();
         }
 
         @Override
@@ -231,7 +273,7 @@ public final class MapActivity extends FragmentActivity {
         @Override
         protected void onPostExecute(String result) {
             if (mStatus != null && "ok".equals(mStatus)) {
-                moveToPositionAndMarker(mLat, mLon, mAccuracy);
+                positionMapAt(mLat, mLon, mAccuracy);
             } else if (mStatus != null && "not_found".equals(mStatus)) {
             	Toast.makeText(getApplicationContext(),
             		getResources().getString(R.string.location_not_found),
