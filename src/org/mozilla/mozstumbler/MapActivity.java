@@ -2,7 +2,6 @@ package org.mozilla.mozstumbler;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
-import android.support.v4.app.FragmentActivity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
